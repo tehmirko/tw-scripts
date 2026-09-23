@@ -162,16 +162,70 @@
         return new Date(epoch).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     }
 
-    function playAlarm() {
-        try {
-            if (window.TribalWars && typeof TribalWars.playSound === 'function') { TribalWars.playSound('chat'); return; }
-        } catch (e) { /* Fallback */ }
-        try {
-            const ctx = new (window.AudioContext || window.webkitAudioContext)();
-            const o = ctx.createOscillator();
-            o.frequency.value = 880; o.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.3);
-        } catch (e) { /* kein Ton möglich */ }
-    }
+    /* Countdown-Piepser: harte Rechteck-Töne, zeitgenau über die AudioContext-Uhr geplant.
+     *   jede volle Sekunde vorher: kurzer Piep 880 Hz
+     *   1 s vorher (Beginn grüne Phase): langer hoher Piep 1320 Hz
+     *   Abschickzeitpunkt: sehr hoher Klick 1760 Hz                     */
+    const Sound = {
+        ctx: null,
+        nodes: [],
+        vol: 0.5,
+
+        get() {
+            if (!this.ctx) {
+                try { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; }
+            }
+            if (this.ctx.state === 'suspended') this.ctx.resume();
+            return this.ctx;
+        },
+
+        beep(at, freq, dur) {
+            const c = this.ctx;
+            const o = c.createOscillator(), g = c.createGain();
+            o.type = 'square';
+            o.frequency.value = freq;
+            g.gain.setValueAtTime(0, at);
+            g.gain.linearRampToValueAtTime(this.vol, at + 0.004);
+            g.gain.setValueAtTime(this.vol, at + dur - 0.01);
+            g.gain.linearRampToValueAtTime(0, at + dur);
+            o.connect(g);
+            g.connect(c.destination);
+            o.start(at);
+            o.stop(at + dur + 0.02);
+            this.nodes.push(o);
+            o.onended = () => { this.nodes = this.nodes.filter(n => n !== o); };
+        },
+
+        cancel() {
+            this.nodes.forEach(o => { try { o.stop(); } catch (e) { /* schon fertig */ } });
+            this.nodes = [];
+        },
+
+        schedule(sendEpoch, secs) {
+            const c = this.get();
+            if (!c) return;
+            this.cancel();
+            const base = c.currentTime, now = Clock.now();
+            for (let k = secs; k >= 0; k--) {
+                const t = (sendEpoch - k * 1000 - now) / 1000;
+                if (t < 0) continue;
+                if (k === 0) this.beep(base + t, 1760, 0.08);
+                else if (k === 1) this.beep(base + t, 1320, 0.25);
+                else this.beep(base + t, 880, 0.12);
+            }
+        },
+
+        test() {
+            const c = this.get();
+            if (!c) return;
+            this.cancel();
+            const b = c.currentTime + 0.05;
+            this.beep(b, 880, 0.12);
+            this.beep(b + 1, 880, 0.12);
+            this.beep(b + 2, 1320, 0.25);
+            this.beep(b + 3, 1760, 0.08);
+        },
+    };
 
     function addStyle() {
         if (document.getElementById('snp-style')) return;
@@ -190,6 +244,7 @@
 #snp-send b{font-size:13px}
 .snp-sub{color:#666;font-size:11px}
 #snp-last{color:#666;font-size:11px;margin-top:2px}
+#snp-cmds{margin-bottom:6px}
 #snp-cmds tr.command-row{cursor:pointer}
 #snp-cmds tr.command-row.snp-sel td{background:#fff !important}
 .snp-cd{font-weight:bold;color:darkblue;white-space:nowrap}
@@ -219,6 +274,7 @@
 
         const $box = $(`
 <div id="snp-box">
+  <div id="snp-cmds"></div>
   <div id="snp-bar"><div id="snp-fill"></div><div id="snp-clock"></div></div>
   <table>
     <tr><td class="snp-l">Ankunft (Serverzeit):</td>
@@ -228,11 +284,11 @@
     <tr><td class="snp-l">Korrektur (ms):</td>
         <td><input id="snp-delay" type="number" step="1">
             &nbsp; <label><input id="snp-alarm" type="checkbox"> Ton</label>
-            <input id="snp-alarm-s" type="number" min="1" step="1"> s vorher</td></tr>
+            <input id="snp-alarm-s" type="number" min="1" step="1"> s vorher
+            <a href="#" id="snp-test" title="Ton testen">▶ Test</a></td></tr>
     <tr><td class="snp-l">Abschicken:</td><td id="snp-send">–</td></tr>
   </table>
   <div id="snp-last"></div>
-  <div id="snp-cmds"></div>
   <div id="snp-wm">Basis: Ricardo/Bottenkraker · Serverzeit-Umbau</div>
 </div>`);
         $('#date_arrival').append($box);
@@ -259,6 +315,7 @@
 
         const recompute = () => {
             state.alarmDone = false;
+            Sound.cancel();
             if (state.target === null || !duration) {
                 state.sendEpoch = null;
                 $send.html(duration ? '–' : '<span class="snp-sub">Laufzeit nicht gefunden</span>');
@@ -292,7 +349,15 @@
             state.delay = Number.isFinite(v) ? v : 0;
             recompute();
         });
-        $('#snp-alarm').on('change', function () { state.alarm = this.checked; persist(); });
+        $('#snp-alarm').on('change', function () {
+            state.alarm = this.checked;
+            state.alarmDone = false;
+            if (!state.alarm) Sound.cancel();
+            persist();
+        });
+        $('#snp-test').on('click', (e) => { e.preventDefault(); Sound.test(); });
+        // Browser erlauben Ton erst nach einer Nutzeraktion -> beim ersten Klick/Tippen freischalten
+        $box.on('pointerdown keydown', () => Sound.get());
         $('#snp-alarm-s').on('input', function () {
             const v = parseInt(this.value, 10);
             state.alarmSec = Number.isFinite(v) && v > 0 ? v : 5;
@@ -342,7 +407,7 @@
                     });
                 });
                 updateCmdRows();
-                $('#snp-cmds').append('<div style="margin-top:6px"><b>Befehle zum Ziel</b> <span class="snp-sub">(Zeile anklicken = Ankunft übernehmen)</span></div>').append($tbl);
+                $('#snp-cmds').append('<div><b>Befehle zum Ziel</b> <span class="snp-sub">(Zeile anklicken = Ankunft übernehmen)</span></div>').append($tbl);
             });
         }
         loadCommands();
@@ -361,6 +426,7 @@
 
         function stop(keepTitle) {
             stopped = true;
+            if (!keepTitle) Sound.cancel();
             if (rafId) cancelAnimationFrame(rafId);
             if (tickId) clearInterval(tickId);
             if (!keepTitle) document.title = origTitle;
@@ -390,9 +456,9 @@
                 const cd = fmtCountdown(left);
                 $('#snp-send-cd').text('(' + cd + ')').css('color', left > 0 ? 'darkblue' : CFG.lateColor);
                 document.title = left > 0 ? 'Abschicken in ' + cd : 'Zu spät!';
-                if (state.alarm && !state.alarmDone && left > 0 && left <= state.alarmSec * 1000) {
+                if (state.alarm && !state.alarmDone && left > 0 && left <= state.alarmSec * 1000 + 500) {
                     state.alarmDone = true;
-                    playAlarm();
+                    Sound.schedule(state.sendEpoch, state.alarmSec);
                 }
             } else {
                 document.title = origTitle;
