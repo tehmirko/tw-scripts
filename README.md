@@ -10,6 +10,7 @@ var timeColor = "green";
 var waitingColor = "#ff9933";
 var noDateColor = "green";
 var timeBarWidth = false;
+var focusDelay = 5;
 
 $.getScript('https://cdn.jsdelivr.net/gh/tehmirko/tw-scripts@main/snipe-de.js');
 ```
@@ -24,6 +25,7 @@ Auf der Bestätigungsseite eines Angriffs/Unterstützung (Versammlungsplatz oder
 - **Ton:** klingt X Sekunden vor dem Abschicken.
 - Balken: orange = warten, **grün = letzte Sekunde**, rot = zu spät. Abschicken, wenn der grüne Balken voll ist.
 - „Letzter Versand“ zeigt, wie viele ms der Klick danebenlag.
+- **Fokus-Modus (Enter):** 5 s nach der letzten Eingabe im Snipe-Feld (und beim Zurückwechseln in den Tab) springt der Fokus auf den Abschicken-Button. Grün hinterlegt + „⏎ Enter bereit“ = mit Enter abschicken. Rot „Fokus nicht auf dem Button“ = nicht in die Seite klicken, kurz warten oder Tab neu anwählen. Enter in den Snipe-Feldern schickt nicht ab. Wartezeit über `var focusDelay = 5;` (0 = aus).
 
 ## Update
 

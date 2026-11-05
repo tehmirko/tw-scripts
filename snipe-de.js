@@ -9,6 +9,11 @@
  *   var waitingColor = "#ff9933"; // Balken, solange noch Zeit ist
  *   var noDateColor = "green";    // Balken ohne Zielzeit
  *   var timeBarWidth = false;     // z.B. 600 für feste Breite
+ *   var focusDelay = 5;           // s nach der letzten Eingabe -> Fokus auf "Abschicken"-Button (0 = aus)
+ *
+ * Fokus-Modus: Nach der letzten Eingabe im Snipe-Feld springt der Fokus nach
+ * focusDelay Sekunden auf den Abschicken-Button (grün hinterlegt = Enter bereit).
+ * Enter in den Snipe-Feldern schickt NICHT ab. Abschicken immer selbst (Enter/Klick).
  */
 (function () {
     'use strict';
@@ -24,6 +29,7 @@
         noDateColor: typeof noDateColor !== 'undefined' ? noDateColor : 'green',
         lateColor: '#c0392b',
         barWidth: typeof timeBarWidth !== 'undefined' ? timeBarWidth : false,
+        focusDelay: typeof focusDelay !== 'undefined' && Number.isFinite(+focusDelay) ? +focusDelay : 5,
     };
 
     const DAY = 86400000;
@@ -248,7 +254,11 @@
 #snp-cmds tr.command-row{cursor:pointer}
 #snp-cmds tr.command-row.snp-sel td{background:#fff !important}
 .snp-cd{font-weight:bold;color:darkblue;white-space:nowrap}
-#snp-wm{font-size:8px;color:#999;text-align:right}`;
+#snp-wm{font-size:8px;color:#999;text-align:right}
+#troop_confirm_submit.snp-armed{background:#1e8c3a !important;color:#fff !important;box-shadow:0 0 0 3px #2ecc71;outline:none}
+#snp-focus{margin-left:8px;font-weight:bold;font-size:12px}
+#snp-focus.on{color:#1e8c3a}
+#snp-focus.off{color:#c0392b}`;
         $('<style id="snp-style">').text(css).appendTo('head');
     }
 
@@ -429,6 +439,7 @@
             if (!keepTitle) Sound.cancel();
             if (rafId) cancelAnimationFrame(rafId);
             if (tickId) clearInterval(tickId);
+            cleanupFocus();
             if (!keepTitle) document.title = origTitle;
         }
 
@@ -473,6 +484,62 @@
         frame();
         tick();
         tickId = setInterval(tick, 100);
+
+        /* ---------- Fokus auf den Abschicken-Button ---------- */
+        // Nach der letzten Eingabe im Snipe-Feld (focusDelay s) und beim Zurückwechseln in den Tab
+        // springt der Fokus auf den Button -> grün = Enter bereit. Es wird NICHTS automatisch abgeschickt.
+        var focusTimer = null;
+        const $btn = $('#troop_confirm_submit');
+        const $fs = $('<span id="snp-focus"></span>');
+        if ($btn.length) $fs.insertAfter($btn);
+
+        const editing = () => {
+            const a = document.activeElement;
+            return !!a && $box[0].contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
+        };
+
+        function showFocus() {
+            if (!$btn.length) return;
+            const on = document.activeElement === $btn[0];
+            $btn.toggleClass('snp-armed', on);
+            $fs.toggleClass('on', on).toggleClass('off', !on)
+                .text(on ? '⏎ Enter bereit' : (CFG.focusDelay > 0 ? 'Fokus nicht auf dem Button' : ''));
+        }
+
+        function armFocus(delayMs) {
+            if (!$btn.length || CFG.focusDelay <= 0 || stopped) return;
+            clearTimeout(focusTimer);
+            focusTimer = setTimeout(() => {
+                if (stopped || !document.body.contains($btn[0])) return;
+                $btn[0].focus();
+                showFocus();
+            }, delayMs);
+        }
+
+        function onVisible() {
+            if (document.visibilityState === 'visible' && !editing()) armFocus(0);
+        }
+
+        function onFocusChange() { setTimeout(showFocus, 0); }
+
+        function cleanupFocus() {
+            clearTimeout(focusTimer);
+            document.removeEventListener('visibilitychange', onVisible);
+            document.removeEventListener('focusin', onFocusChange);
+            document.removeEventListener('focusout', onFocusChange);
+        }
+
+        // Enter in den Snipe-Feldern darf das Formular nicht abschicken
+        $box.on('keydown', 'input', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); }
+        });
+        // jede Eingabe im Snipe-Feld startet die Wartezeit neu
+        $box.on('input change keydown pointerdown', () => armFocus(CFG.focusDelay * 1000));
+        document.addEventListener('visibilitychange', onVisible);
+        document.addEventListener('focusin', onFocusChange);
+        document.addEventListener('focusout', onFocusChange);
+        armFocus(CFG.focusDelay * 1000);
+        showFocus();
 
         /* ---------- Abschicken ---------- */
         $('#troop_confirm_submit').on('click', function () {
