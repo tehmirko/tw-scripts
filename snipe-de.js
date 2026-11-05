@@ -244,7 +244,8 @@
 #snp-box td{padding:2px 4px;vertical-align:middle}
 #snp-box td.snp-l{white-space:nowrap;width:1%}
 #snp-target{width:230px}
-#snp-delay,#snp-alarm-s{width:60px}
+#snp-delay,#snp-lat,#snp-alarm-s{width:60px}
+#snp-mark{position:absolute;top:-3px;bottom:-3px;width:3px;margin-left:-1px;background:#e00;box-shadow:0 0 2px #fff;display:none;z-index:2}
 #snp-ok{margin-left:6px}
 #snp-ok.bad{color:#c0392b}
 #snp-send b{font-size:13px}
@@ -276,6 +277,7 @@
             delay: Number.isFinite(saved.delay) ? saved.delay : 0,
             alarm: saved.alarm !== false,
             alarmSec: Number.isFinite(saved.alarmSec) ? saved.alarmSec : 5,
+            lat: Number.isFinite(saved.lat) ? saved.lat : 370,   // ms vom Klick bis der Server den Befehl hat
             alarmDone: false,
             sendEpoch: null,
         };
@@ -285,7 +287,7 @@
         const $box = $(`
 <div id="snp-box">
   <div id="snp-cmds"></div>
-  <div id="snp-bar"><div id="snp-fill"></div><div id="snp-clock"></div></div>
+  <div id="snp-bar"><div id="snp-fill"></div><div id="snp-mark" title="Optimaler Klickzeitpunkt"></div><div id="snp-clock"></div></div>
   <table>
     <tr><td class="snp-l">Ankunft (Serverzeit):</td>
         <td><input id="snp-target" type="text" autocomplete="off"
@@ -296,6 +298,9 @@
             &nbsp; <label><input id="snp-alarm" type="checkbox"> Ton</label>
             <input id="snp-alarm-s" type="number" min="1" step="1"> s vorher
             <a href="#" id="snp-test" title="Ton testen">▶ Test</a></td></tr>
+    <tr><td class="snp-l">Klick-Laufzeit (ms):</td>
+        <td><input id="snp-lat" type="number" step="1" min="0">
+            <span class="snp-sub">rote Linie im Balken = optimaler Klickzeitpunkt</span></td></tr>
     <tr><td class="snp-l">Abschicken:</td><td id="snp-send">–</td></tr>
   </table>
   <div id="snp-last"></div>
@@ -307,19 +312,22 @@
 
         const $target = $('#snp-target'), $ok = $('#snp-ok'), $send = $('#snp-send');
         $('#snp-delay').val(state.delay);
+        $('#snp-lat').val(state.lat);
         $('#snp-alarm').prop('checked', state.alarm);
         $('#snp-alarm-s').val(state.alarmSec);
 
         if (saved.last) {
             const l = saved.last;
+            const sg = v => (v >= 0 ? '+' : '') + v;
             $('#snp-last').text(`Letzter Versand: Klick bei :${pad(l.ms, 3)}` +
-                (Number.isFinite(l.diff) ? ` (${l.diff >= 0 ? '+' : ''}${l.diff} ms zum Abschickzeitpunkt)` : ''));
+                (Number.isFinite(l.diff) ? ` (${sg(l.diff)} ms zum Abschickzeitpunkt` +
+                    (Number.isFinite(l.lat) ? `, ${sg(l.diff + l.lat)} ms zur roten Linie` : '') + ')' : ''));
         }
 
         const persist = () => {
             const cur = Store.load();
             Store.save(Object.assign(cur, {
-                target: state.target, delay: state.delay, alarm: state.alarm, alarmSec: state.alarmSec,
+                target: state.target, delay: state.delay, alarm: state.alarm, alarmSec: state.alarmSec, lat: state.lat,
             }));
         };
 
@@ -336,8 +344,20 @@
                     <br><span class="snp-sub">bei dir: ${fmtLocal(state.sendEpoch)} Uhr · Ankunft ${Clock.fmtFull(state.target + state.delay)}</span>`);
             }
             updateCmdRows();
+            updateMark();
             persist();
         };
+
+        /* Rote Linie: Klickzeitpunkt, bei dem der Befehl genau zur Zielzeit (+Korrektur) ankommt
+         *   Klick optimal = Abschickzeitpunkt - Klick-Laufzeit
+         * Der Balken läuft jede Sekunde von 0 bis 100 % und ist beim Abschickzeitpunkt voll. */
+        function updateMark() {
+            const m = document.getElementById('snp-mark');
+            if (!m) return;
+            if (state.sendEpoch === null || !Number.isFinite(state.lat)) { m.style.display = 'none'; return; }
+            m.style.left = (mod(-state.lat, 1000) / 10) + '%';
+            m.style.display = 'block';
+        }
 
         const setTarget = (epoch, writeInput) => {
             state.target = epoch;
@@ -364,6 +384,11 @@
             state.alarmDone = false;
             if (!state.alarm) Sound.cancel();
             persist();
+        });
+        $('#snp-lat').on('input', function () {
+            const v = parseInt(this.value, 10);
+            state.lat = Number.isFinite(v) && v >= 0 ? v : 0;
+            recompute();
         });
         $('#snp-test').on('click', (e) => { e.preventDefault(); Sound.test(); });
         // Browser erlauben Ton erst nach einer Nutzeraktion -> beim ersten Klick/Tippen freischalten
@@ -544,7 +569,7 @@
         /* ---------- Abschicken ---------- */
         $('#troop_confirm_submit').on('click', function () {
             const now = Clock.now();
-            const last = { ms: Clock.parts(now).ms, diff: state.sendEpoch !== null ? Math.round(now - state.sendEpoch) : null };
+            const last = { ms: Clock.parts(now).ms, diff: state.sendEpoch !== null ? Math.round(now - state.sendEpoch) : null, lat: state.lat };
             const cur = Store.load();
             cur.last = last;
             Store.save(cur);

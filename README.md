@@ -25,6 +25,7 @@ Auf der Bestätigungsseite eines Angriffs/Unterstützung (Versammlungsplatz oder
 - **Ton:** klingt X Sekunden vor dem Abschicken.
 - Balken: orange = warten, **grün = letzte Sekunde**, rot = zu spät. Abschicken, wenn der grüne Balken voll ist.
 - „Letzter Versand“ zeigt, wie viele ms der Klick danebenlag.
+- **Rote Linie / Klick-Laufzeit (ms):** Zeit vom Klick bis der Server den Befehl hat (Büro Mexiko ≈ 370 ms). Die rote Linie im Balken markiert den optimalen Klickzeitpunkt (= Abschickzeitpunkt − Klick-Laufzeit). Wer auf die rote Linie klickt, braucht Korrektur 0. „Letzter Versand“ zeigt zusätzlich die Abweichung zur roten Linie.
 - **Fokus-Modus (Enter):** 5 s nach der letzten Eingabe im Snipe-Feld (und beim Zurückwechseln in den Tab) springt der Fokus auf den Abschicken-Button. Grün hinterlegt + „⏎ Enter bereit“ = mit Enter abschicken. Rot „Fokus nicht auf dem Button“ = nicht in die Seite klicken, kurz warten oder Tab neu anwählen. Enter in den Snipe-Feldern schickt nicht ab. Wartezeit über `var focusDelay = 5;` (0 = aus).
 
 ## Update
