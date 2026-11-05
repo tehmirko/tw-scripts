@@ -274,7 +274,7 @@
 #snp-box td{padding:2px 4px;vertical-align:middle}
 #snp-box td.snp-l{white-space:nowrap;width:1%}
 #snp-target{width:230px}
-#snp-delay,#snp-lat,#snp-alarm-s{width:60px}
+#snp-lat,#snp-alarm-s{width:60px}
 #snp-mark{position:absolute;top:-3px;bottom:-3px;width:3px;margin-left:-1px;background:#e00;box-shadow:0 0 2px #fff;display:none;z-index:2}
 #snp-ok{margin-left:6px}
 #snp-ok.bad{color:#c0392b}
@@ -304,7 +304,6 @@
         const saved = Store.load();
         const state = {
             target: null,                          // gewünschte Ankunft (epoch ms)
-            delay: Number.isFinite(saved.delay) ? saved.delay : 0,
             alarm: saved.alarm !== false,
             alarmSec: Number.isFinite(saved.alarmSec) ? saved.alarmSec : 5,
             lat: Number.isFinite(saved.lat) ? saved.lat : 390,   // ms vom Klick bis der Server den Befehl hat (inkl. Versatz der Spieluhr)
@@ -324,9 +323,8 @@
         <td><input id="snp-target" type="text" autocomplete="off"
              placeholder="20:15:30:123  ·  morgen 20:15:30:123  ·  24.09. 20:15:30:123">
             <a href="#" id="snp-clear" title="Zielzeit löschen">✕</a><span id="snp-ok"></span></td></tr>
-    <tr><td class="snp-l">Korrektur (ms):</td>
-        <td><input id="snp-delay" type="number" step="1">
-            &nbsp; <label><input id="snp-alarm" type="checkbox"> Ton</label>
+    <tr><td class="snp-l">Ton:</td>
+        <td><label><input id="snp-alarm" type="checkbox"> an</label>
             <input id="snp-alarm-s" type="number" min="1" step="1"> s vorher
             <a href="#" id="snp-test" title="Ton testen">▶ Test</a></td></tr>
     <tr><td class="snp-l">Klick-Laufzeit (ms):</td>
@@ -344,7 +342,6 @@
         if (CFG.barWidth) $('#command-data-form .vis:first, #date_arrival').width(CFG.barWidth);
 
         const $target = $('#snp-target'), $ok = $('#snp-ok'), $send = $('#snp-send');
-        $('#snp-delay').val(state.delay);
         $('#snp-lat').val(state.lat);
         $('#snp-alarm').prop('checked', state.alarm);
         $('#snp-alarm-s').val(state.alarmSec);
@@ -360,7 +357,7 @@
         const persist = () => {
             const cur = Store.load();
             Store.save(Object.assign(cur, {
-                target: state.target, delay: state.delay, alarm: state.alarm, alarmSec: state.alarmSec, lat: state.lat, latAuto: state.latAuto,
+                target: state.target, alarm: state.alarm, alarmSec: state.alarmSec, lat: state.lat, latAuto: state.latAuto,
             }));
         };
 
@@ -371,17 +368,17 @@
                 state.sendEpoch = null;
                 $send.html(duration ? '–' : '<span class="snp-sub">Laufzeit nicht gefunden</span>');
             } else {
-                state.sendEpoch = state.target + state.delay - duration;
+                state.sendEpoch = state.target - duration;
                 $send.html(`<b>${Clock.fmtFull(state.sendEpoch)}</b>
                     &nbsp;<span id="snp-send-cd" class="snp-cd"></span>
-                    <br><span class="snp-sub">bei dir: ${fmtLocal(state.sendEpoch)} Uhr · Ankunft ${Clock.fmtFull(state.target + state.delay)}</span>`);
+                    <br><span class="snp-sub">bei dir: ${fmtLocal(state.sendEpoch)} Uhr · Ankunft ${Clock.fmtFull(state.target)}</span>`);
             }
             updateCmdRows();
             updateMark();
             persist();
         };
 
-        /* Rote Linie: Klickzeitpunkt, bei dem der Befehl genau zur Zielzeit (+Korrektur) ankommt
+        /* Rote Linie: Klickzeitpunkt, bei dem der Befehl genau zur Zielzeit ankommt
          *   Klick optimal = Abschickzeitpunkt - Klick-Laufzeit
          * Der Balken ist auf diesen Klickzeitpunkt synchronisiert: er läuft jede Sekunde von 0 bis 100 %
          * und steht genau beim optimalen Klick auf 50 % -> rote Linie immer in der Mitte. */
@@ -408,11 +405,6 @@
             setTarget(ep, false);
         });
         $('#snp-clear').on('click', (e) => { e.preventDefault(); setTarget(null, true); });
-        $('#snp-delay').on('input', function () {
-            const v = parseInt(this.value, 10);
-            state.delay = Number.isFinite(v) ? v : 0;
-            recompute();
-        });
         $('#snp-alarm').on('change', function () {
             state.alarm = this.checked;
             state.alarmDone = false;
@@ -467,7 +459,7 @@
 
         /* ---------- laufende Befehle zum Ziel ---------- */
         function updateCmdRows() {
-            cmdRows.forEach(r => { r.sendAt = duration ? r.arrival + state.delay - duration : null; });
+            cmdRows.forEach(r => { r.sendAt = duration ? r.arrival - duration : null; });
         }
 
         function loadCommands() {
