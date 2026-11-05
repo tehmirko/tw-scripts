@@ -42,11 +42,39 @@
     /* ------------------------------------------------------------------ */
     const Clock = {
         offset: 0, // ms: Server-Wanduhr minus UTC (Deutschland: 3600000 / 7200000)
+        corr: 0,   // ms: Feinkorrektur der Spieluhr aus dem Uhr-Sync
+        rtt: null, // ms: kürzester gemessener Ping beim Sync
+        synced: false,
 
-        now() {
+        base() {
             return (window.Timing && typeof Timing.getCurrentServerTime === 'function')
                 ? Timing.getCurrentServerTime()
                 : Date.now();
+        },
+
+        now() { return this.base() + this.corr; },
+
+        /* Die Spieluhr (Timing) startet mit der Serverzeit beim Erzeugen der Seite und liegt je nach
+         * Ladezeit mehrere 100 ms daneben. Sync: ein paar kleine Anfragen, Server-Zeitstempel
+         * (time_generated, ms) gegen die Mitte der Anfrage legen, kürzesten Ping nehmen. */
+        async sync(samples = 3) {
+            if (!window.game_data) return null;
+            const url = location.pathname + '?village=' + game_data.village.id + '&screen=settings&mode=vacation&_partial';
+            let best = null;
+            for (let i = 0; i < samples; i++) {
+                if (i) await new Promise(r => setTimeout(r, 400));
+                try {
+                    const a = this.base();
+                    const txt = await (await fetch(url + '&_=' + Date.now(), { cache: 'no-store', credentials: 'same-origin' })).text();
+                    const b = this.base();
+                    const m = txt.match(/"time_generated"\s*:\s*(\d+)/);
+                    if (!m) continue;
+                    const smp = { rtt: b - a, corr: (+m[1]) - (a + b) / 2 };
+                    if (!best || smp.rtt < best.rtt) best = smp;
+                } catch (e) { /* nächster Versuch */ }
+            }
+            if (best) { this.corr = Math.round(best.corr); this.rtt = Math.round(best.rtt); this.synced = true; }
+            return best;
         },
 
         init() {
@@ -277,7 +305,8 @@
             delay: Number.isFinite(saved.delay) ? saved.delay : 0,
             alarm: saved.alarm !== false,
             alarmSec: Number.isFinite(saved.alarmSec) ? saved.alarmSec : 5,
-            lat: Number.isFinite(saved.lat) ? saved.lat : 370,   // ms vom Klick bis der Server den Befehl hat
+            lat: Number.isFinite(saved.lat) ? saved.lat : 120,   // ms vom Klick bis der Server den Befehl hat
+            latAuto: saved.latAuto !== false,                    // Klick-Laufzeit = halber Ping aus dem Uhr-Sync
             alarmDone: false,
             sendEpoch: null,
         };
@@ -300,7 +329,9 @@
             <a href="#" id="snp-test" title="Ton testen">▶ Test</a></td></tr>
     <tr><td class="snp-l">Klick-Laufzeit (ms):</td>
         <td><input id="snp-lat" type="number" step="1" min="0">
+            <a href="#" id="snp-lat-auto" title="Klick-Laufzeit wieder automatisch aus dem Ping">auto</a>
             <span class="snp-sub">rote Linie im Balken = optimaler Klickzeitpunkt</span></td></tr>
+    <tr><td class="snp-l">Uhr-Sync:</td><td id="snp-sync" class="snp-sub">läuft …</td></tr>
     <tr><td class="snp-l">Abschicken:</td><td id="snp-send">–</td></tr>
   </table>
   <div id="snp-last"></div>
@@ -327,7 +358,7 @@
         const persist = () => {
             const cur = Store.load();
             Store.save(Object.assign(cur, {
-                target: state.target, delay: state.delay, alarm: state.alarm, alarmSec: state.alarmSec, lat: state.lat,
+                target: state.target, delay: state.delay, alarm: state.alarm, alarmSec: state.alarmSec, lat: state.lat, latAuto: state.latAuto,
             }));
         };
 
@@ -388,7 +419,25 @@
         $('#snp-lat').on('input', function () {
             const v = parseInt(this.value, 10);
             state.lat = Number.isFinite(v) && v >= 0 ? v : 0;
+            state.latAuto = false;
+            $('#snp-lat-auto').css('font-weight', 'normal');
             recompute();
+        });
+        const applyAutoLat = () => {
+            $('#snp-lat-auto').css('font-weight', state.latAuto ? 'bold' : 'normal');
+            if (state.latAuto && Clock.rtt !== null) {
+                state.lat = Math.round(Clock.rtt / 2);
+                $('#snp-lat').val(state.lat);
+                recompute();
+            }
+        };
+        $('#snp-lat-auto').on('click', (e) => { e.preventDefault(); state.latAuto = true; applyAutoLat(); persist(); });
+        applyAutoLat();
+        Clock.sync().then((r) => {
+            $('#snp-sync').text(r
+                ? `Spieluhr ${Clock.corr >= 0 ? '+' : ''}${Clock.corr} ms korrigiert · Ping ${Clock.rtt} ms`
+                : 'nicht möglich – Spieluhr ungenau (±300 ms)');
+            applyAutoLat();
         });
         $('#snp-test').on('click', (e) => { e.preventDefault(); Sound.test(); });
         // Browser erlauben Ton erst nach einer Nutzeraktion -> beim ersten Klick/Tippen freischalten
@@ -525,7 +574,7 @@
 
         function showFocus() {
             if (!$btn.length) return;
-            const on = document.activeElement === $btn[0];
+            const on = document.activeElement === $btn[0] && document.hasFocus();
             $btn.toggleClass('snp-armed', on);
             $fs.toggleClass('on', on).toggleClass('off', !on)
                 .text(on ? '⏎ Enter bereit' : (CFG.focusDelay > 0 ? 'Fokus nicht auf dem Button' : ''));
@@ -547,8 +596,17 @@
 
         function onFocusChange() { setTimeout(showFocus, 0); }
 
+        // Klick irgendwo in die Seite (nicht in ein Eingabefeld/Link) -> Fokus kurz danach zurück
+        function onPointer(e) {
+            if (e.target.closest && e.target.closest('input,textarea,select,a,button,label')) return;
+            armFocus(700);
+        }
+
         function cleanupFocus() {
             clearTimeout(focusTimer);
+            clearInterval(focusShowId);
+            document.removeEventListener('pointerdown', onPointer, true);
+            window.removeEventListener('focus', onVisible);
             document.removeEventListener('visibilitychange', onVisible);
             document.removeEventListener('focusin', onFocusChange);
             document.removeEventListener('focusout', onFocusChange);
@@ -561,6 +619,9 @@
         // jede Eingabe im Snipe-Feld startet die Wartezeit neu
         $box.on('input change keydown pointerdown', () => armFocus(CFG.focusDelay * 1000));
         document.addEventListener('visibilitychange', onVisible);
+        window.addEventListener('focus', onVisible);
+        document.addEventListener('pointerdown', onPointer, true);
+        var focusShowId = setInterval(showFocus, 200);   // grün nur, wenn Fenster UND Button Fokus haben
         document.addEventListener('focusin', onFocusChange);
         document.addEventListener('focusout', onFocusChange);
         armFocus(CFG.focusDelay * 1000);
