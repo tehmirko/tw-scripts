@@ -30,6 +30,8 @@
         lateColor: '#c0392b',
         barWidth: typeof timeBarWidth !== 'undefined' ? timeBarWidth : false,
         focusDelay: typeof focusDelay !== 'undefined' && Number.isFinite(+focusDelay) ? +focusDelay : 5,
+        // Uhr-Sync über time_generated ist (noch) unzuverlässig -> standardmäßig aus
+        clockSync: typeof clockSync !== 'undefined' ? !!clockSync : false,
     };
 
     const DAY = 86400000;
@@ -197,9 +199,9 @@
     }
 
     /* Countdown-Piepser: harte Rechteck-Töne, zeitgenau über die AudioContext-Uhr geplant.
-     *   jede volle Sekunde vorher: kurzer Piep 880 Hz
-     *   1 s vorher (Beginn grüne Phase): langer hoher Piep 1320 Hz
-     *   Abschickzeitpunkt: sehr hoher Klick 1760 Hz                     */
+     *   jede volle Sekunde vor dem optimalen Klick (rote Linie): kurzer Piep 880 Hz
+     *   1 s vorher: langer hoher Piep 1320 Hz
+     *   optimaler Klick (rote Linie): sehr hoher Klick 1760 Hz                    */
     const Sound = {
         ctx: null,
         nodes: [],
@@ -305,8 +307,8 @@
             delay: Number.isFinite(saved.delay) ? saved.delay : 0,
             alarm: saved.alarm !== false,
             alarmSec: Number.isFinite(saved.alarmSec) ? saved.alarmSec : 5,
-            lat: Number.isFinite(saved.lat) ? saved.lat : 120,   // ms vom Klick bis der Server den Befehl hat
-            latAuto: saved.latAuto !== false,                    // Klick-Laufzeit = halber Ping aus dem Uhr-Sync
+            lat: Number.isFinite(saved.lat) ? saved.lat : 390,   // ms vom Klick bis der Server den Befehl hat (inkl. Versatz der Spieluhr)
+            latAuto: CFG.clockSync && saved.latAuto === true,   // nur mit Uhr-Sync: Klick-Laufzeit = halber Ping
             alarmDone: false,
             sendEpoch: null,
         };
@@ -329,9 +331,9 @@
             <a href="#" id="snp-test" title="Ton testen">▶ Test</a></td></tr>
     <tr><td class="snp-l">Klick-Laufzeit (ms):</td>
         <td><input id="snp-lat" type="number" step="1" min="0">
-            <a href="#" id="snp-lat-auto" title="Klick-Laufzeit wieder automatisch aus dem Ping">auto</a>
-            <span class="snp-sub">rote Linie im Balken = optimaler Klickzeitpunkt</span></td></tr>
-    <tr><td class="snp-l">Uhr-Sync:</td><td id="snp-sync" class="snp-sub">läuft …</td></tr>
+            ${CFG.clockSync ? '<a href="#" id="snp-lat-auto" title="Klick-Laufzeit wieder automatisch aus dem Ping">auto</a>' : ''}
+            <span class="snp-sub">rote Linie (Balkenmitte) = optimaler Klickzeitpunkt</span></td></tr>
+    ${CFG.clockSync ? '<tr><td class="snp-l">Uhr-Sync:</td><td id="snp-sync" class="snp-sub">läuft …</td></tr>' : ''}
     <tr><td class="snp-l">Abschicken:</td><td id="snp-send">–</td></tr>
   </table>
   <div id="snp-last"></div>
@@ -381,13 +383,14 @@
 
         /* Rote Linie: Klickzeitpunkt, bei dem der Befehl genau zur Zielzeit (+Korrektur) ankommt
          *   Klick optimal = Abschickzeitpunkt - Klick-Laufzeit
-         * Der Balken läuft jede Sekunde von 0 bis 100 % und ist beim Abschickzeitpunkt voll. */
+         * Der Balken ist auf diesen Klickzeitpunkt synchronisiert: er läuft jede Sekunde von 0 bis 100 %
+         * und steht genau beim optimalen Klick auf 50 % -> rote Linie immer in der Mitte. */
+        const clickEpoch = () => state.sendEpoch === null ? null : state.sendEpoch - (Number.isFinite(state.lat) ? state.lat : 0);
         function updateMark() {
             const m = document.getElementById('snp-mark');
             if (!m) return;
-            if (state.sendEpoch === null || !Number.isFinite(state.lat)) { m.style.display = 'none'; return; }
-            m.style.left = (mod(-state.lat, 1000) / 10) + '%';
-            m.style.display = 'block';
+            m.style.left = '50%';
+            m.style.display = state.sendEpoch === null ? 'none' : 'block';
         }
 
         const setTarget = (epoch, writeInput) => {
@@ -431,14 +434,16 @@
                 recompute();
             }
         };
-        $('#snp-lat-auto').on('click', (e) => { e.preventDefault(); state.latAuto = true; applyAutoLat(); persist(); });
-        applyAutoLat();
-        Clock.sync().then((r) => {
-            $('#snp-sync').text(r
-                ? `Spieluhr ${Clock.corr >= 0 ? '+' : ''}${Clock.corr} ms korrigiert · Ping ${Clock.rtt} ms`
-                : 'nicht möglich – Spieluhr ungenau (±300 ms)');
+        if (CFG.clockSync) {
+            $('#snp-lat-auto').on('click', (e) => { e.preventDefault(); state.latAuto = true; applyAutoLat(); persist(); });
             applyAutoLat();
-        });
+            Clock.sync().then((r) => {
+                $('#snp-sync').text(r
+                    ? `Spieluhr ${Clock.corr >= 0 ? '+' : ''}${Clock.corr} ms korrigiert · Ping ${Clock.rtt} ms`
+                    : 'nicht möglich – Spieluhr ungenau (±300 ms)');
+                applyAutoLat();
+            });
+        }
         $('#snp-test').on('click', (e) => { e.preventDefault(); Sound.test(); });
         // Browser erlauben Ton erst nach einer Nutzeraktion -> beim ersten Klick/Tippen freischalten
         $box.on('pointerdown keydown', () => Sound.get());
@@ -525,10 +530,12 @@
                 fill.style.width = (mod(now, 1000) / 10) + '%';
                 fill.style.background = CFG.noDateColor;
             } else {
-                const diff = state.sendEpoch - now;
-                fill.style.width = (mod(now - state.sendEpoch, 1000) / 10) + '%';
-                fill.style.background = (diff > 0 && diff <= 1000) ? CFG.timeColor
-                    : (diff <= 0 && diff > -1000) ? CFG.lateColor : CFG.waitingColor;
+                const ce = clickEpoch();
+                const diff = ce - now;   // ms bis zum optimalen Klick
+                fill.style.width = (mod(now - ce + 500, 1000) / 10) + '%';
+                // grün: die Sekunde um den optimalen Klick (Linie in der Mitte), rot: danach, orange: davor
+                fill.style.background = (diff > -500 && diff <= 500) ? CFG.timeColor
+                    : (diff <= -500 && diff > -1500) ? CFG.lateColor : CFG.waitingColor;
             }
             rafId = requestAnimationFrame(frame);
         }
@@ -541,9 +548,10 @@
                 const cd = fmtCountdown(left);
                 $('#snp-send-cd').text('(' + cd + ')').css('color', left > 0 ? 'darkblue' : CFG.lateColor);
                 document.title = left > 0 ? 'Abschicken in ' + cd : 'Zu spät!';
-                if (state.alarm && !state.alarmDone && left > 0 && left <= state.alarmSec * 1000 + 500) {
+                const toClick = clickEpoch() - now;   // Ton läuft auf den optimalen Klick (rote Linie) hin
+                if (state.alarm && !state.alarmDone && toClick > 0 && toClick <= state.alarmSec * 1000 + 500) {
                     state.alarmDone = true;
-                    Sound.schedule(state.sendEpoch, state.alarmSec);
+                    Sound.schedule(clickEpoch(), state.alarmSec);
                 }
             } else {
                 document.title = origTitle;
