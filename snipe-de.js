@@ -1,19 +1,18 @@
 /*
- * Snipe-Timer DE
- * Umbau des Bottenkraker-Snipetools (Ricardo) – rechnet komplett in SERVERZEIT.
- * Die Zeitzone des eigenen PCs spielt keine Rolle mehr: alles, was man eingibt
- * und was angezeigt wird, ist die Zeit, die das Spiel anzeigt.
+ * Snipe Timer DE
+ * Based on the snipe tool by Ricardo/Bottenkraker – reworked to calculate entirely in SERVER TIME.
+ * The time zone of the player's PC does not matter: everything entered and shown is game time.
  *
- * Optionale Einstellungen vor dem Laden (wie beim Original):
- *   var timeColor = "green";      // Balken in der letzten Sekunde vor dem Abschicken
- *   var waitingColor = "#ff9933"; // Balken, solange noch Zeit ist
- *   var noDateColor = "green";    // Balken ohne Zielzeit
- *   var timeBarWidth = false;     // z.B. 600 für feste Breite
- *   var focusDelay = 5;           // s nach der letzten Eingabe -> Fokus auf "Abschicken"-Button (0 = aus)
+ * What it does (display only):
+ *   - countdown bar on the attack/support confirmation page, synced to the optimal click moment
+ *   - optional countdown beeps (Web Audio, no external files)
+ *   - lists the commands already heading to the target village (one request on start)
+ * What it does NOT do:
+ *   - it never sends, clicks or focuses the send button – the player always sends manually
  *
- * Fokus-Modus: Nach der letzten Eingabe im Snipe-Feld springt der Fokus nach
- * focusDelay Sekunden auf den Abschicken-Button (grün hinterlegt = Enter bereit).
- * Enter in den Snipe-Feldern schickt NICHT ab. Abschicken immer selbst (Enter/Klick).
+ * Optional user data (TribalWars.scriptData, JSON):
+ *   { "timeColor": "green", "waitingColor": "#ff9933", "noDateColor": "green", "barWidth": 600 }
+ * Latency, beep and target time are set in the in-game panel and stored in localStorage.
  */
 (function () {
     'use strict';
@@ -23,25 +22,66 @@
         return;
     }
 
+    /* ------------------------------------------------------------------ */
+    /* Settings (user data)                                                */
+    /* ------------------------------------------------------------------ */
+    let UD = {};
+    try {
+        const sd = window.TribalWars && TribalWars.scriptData;
+        UD = (typeof sd === 'string' ? JSON.parse(sd) : sd) || {};
+    } catch (e) { UD = {}; }
+    const isColor = v => typeof v === 'string' && /^(#[0-9a-f]{3,8}|[a-z]{3,20}|rgba?\([\d\s.,%]+\))$/i.test(v.trim());
     const CFG = {
-        timeColor: typeof timeColor !== 'undefined' ? timeColor : 'green',
-        waitingColor: typeof waitingColor !== 'undefined' ? waitingColor : '#ff9933',
-        noDateColor: typeof noDateColor !== 'undefined' ? noDateColor : 'green',
+        timeColor: isColor(UD.timeColor) ? UD.timeColor : 'green',
+        waitingColor: isColor(UD.waitingColor) ? UD.waitingColor : '#ff9933',
+        noDateColor: isColor(UD.noDateColor) ? UD.noDateColor : 'green',
         lateColor: '#c0392b',
-        barWidth: typeof timeBarWidth !== 'undefined' ? timeBarWidth : false,
-        focusDelay: typeof focusDelay !== 'undefined' && Number.isFinite(+focusDelay) ? +focusDelay : 5,
+        barWidth: Number.isFinite(+UD.barWidth) && +UD.barWidth >= 300 ? +UD.barWidth : false,
     };
 
+    /* ------------------------------------------------------------------ */
+    /* Language: German on German-speaking markets, English otherwise      */
+    /* ------------------------------------------------------------------ */
+    const LANG = (window.game_data && /^de/i.test(game_data.locale || game_data.market || '')) ? 'de' : 'en';
+    const TXT = {
+        de: {
+            wd: ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'],
+            late: 'zu spät', tooLate: 'Zu spät!', sendIn: 'Abschicken in ',
+            arrival: 'Ankunft (Serverzeit):', ph: '20:15:30:123  ·  morgen 20:15:30:123  ·  24.09. 20:15:30:123',
+            clear: 'Zielzeit löschen', sound: 'Ton:', on: 'an', before: 's vorher', test: '▶ Test', testT: 'Ton testen',
+            lat: 'Klick-Laufzeit (ms):', latHint: 'rote Linie (Balkenmitte) = optimaler Klickzeitpunkt',
+            send: 'Abschicken:', noDur: 'Laufzeit nicht gefunden', local: 'bei dir', clockSuffix: ' Uhr', arr: 'Ankunft',
+            bad: '?? Format z.B. 20:15:30:123', mark: 'Optimaler Klickzeitpunkt',
+            last: 'Letzter Versand: Klick bei', toSend: 'ms zum Abschickzeitpunkt', toLine: 'ms zur roten Linie',
+            cmds: 'Befehle zum Ziel', cmdsHint: '(Zeile anklicken = Ankunft übernehmen)', cmdCol: 'Abschicken in',
+            wm: 'Basis: Ricardo/Bottenkraker · Serverzeit-Umbau',
+            dur: /^\s*(Dauer|Duration)/i, today: /heute|today/, tomorrow: /morgen|tomorrow/, dayAfter: /übermorgen|uebermorgen/,
+        },
+        en: {
+            wd: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+            late: 'too late', tooLate: 'Too late!', sendIn: 'Send in ',
+            arrival: 'Arrival (server time):', ph: '20:15:30:123  ·  tomorrow 20:15:30:123  ·  24.09. 20:15:30:123',
+            clear: 'Clear target time', sound: 'Beep:', on: 'on', before: 's before', test: '▶ Test', testT: 'Test sound',
+            lat: 'Click latency (ms):', latHint: 'red line (bar centre) = optimal click moment',
+            send: 'Send at:', noDur: 'Travel time not found', local: 'your time', clockSuffix: '', arr: 'arrival',
+            bad: '?? format e.g. 20:15:30:123', mark: 'Optimal click moment',
+            last: 'Last send: click at', toSend: 'ms to send moment', toLine: 'ms to red line',
+            cmds: 'Commands to target', cmdsHint: '(click a row = use its arrival)', cmdCol: 'Send in',
+            wm: 'Based on Ricardo/Bottenkraker · server-time rework',
+            dur: /^\s*(Duration|Dauer)/i, today: /today|heute/, tomorrow: /tomorrow|morgen/, dayAfter: /day after tomorrow|übermorgen/,
+        },
+    };
+    const T = TXT[LANG];
+
     const DAY = 86400000;
-    const WD = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
     const pad = (n, l = 2) => String(n).padStart(l, '0');
     const mod = (a, b) => ((a % b) + b) % b;
 
     /* ------------------------------------------------------------------ */
-    /* Serveruhr                                                           */
+    /* Server clock (uses the game's own clock, no extra requests)         */
     /* ------------------------------------------------------------------ */
     const Clock = {
-        offset: 0, // ms: Server-Wanduhr minus UTC (Deutschland: 3600000 / 7200000)
+        offset: 0, // ms: server wall clock minus UTC
         now() {
             return (window.Timing && typeof Timing.getCurrentServerTime === 'function')
                 ? Timing.getCurrentServerTime()
@@ -54,11 +94,11 @@
                 const d = $('#serverDate').text().match(/(\d+)\/(\d+)\/(\d+)/);
                 if (t && d) {
                     const wall = Date.UTC(+d[3], +d[2] - 1, +d[1], +t[1], +t[2], +t[3]);
-                    // auf 15 min runden – der Sekundenversatz der Anzeige fällt so weg
+                    // round to 15 min – removes the display's second offset
                     this.offset = Math.round((wall - this.now()) / 900000) * 900000;
                     return;
                 }
-            } catch (e) { /* Fallback unten */ }
+            } catch (e) { /* fallback below */ }
             this.offset = (typeof window.server_utc_diff === 'number') ? window.server_utc_diff * 1000 : 0;
         },
 
@@ -82,15 +122,14 @@
 
         fmtFull(epoch) {
             const p = this.parts(epoch);
-            return `${WD[p.wd]} ${pad(p.d)}.${pad(p.mo)}. ${this.fmtTime(epoch)}`;
+            return `${T.wd[p.wd]} ${pad(p.d)}.${pad(p.mo)}. ${this.fmtTime(epoch)}`;
         },
 
-        /* Eingabe (Serverzeit) -> Epoch-ms. Akzeptiert u.a.:
-         *   20:15:30            20:15:30:123        20:15:30.5 (=500 ms)
-         *   heute um 20:15:30:123     morgen 20:15:30:123
-         *   24.09. 20:15:30:123       am 24.09.26 um 20:15:30:123
-         *   Mi 24.09. 20:15:30:123    24/09/2026 20:15:30
-         * Ohne Datum: heute, bzw. morgen falls die Uhrzeit schon vorbei ist. */
+        /* Input (server time) -> epoch ms. Accepts e.g.:
+         *   20:15:30   20:15:30:123   20:15:30.5 (=500 ms)
+         *   today/heute 20:15:30:123   tomorrow/morgen 20:15:30:123
+         *   24.09. 20:15:30:123   24/09/2026 20:15:30
+         * Without a date: today, or tomorrow if the time has already passed. */
         parse(input, nowEp = this.now()) {
             const s = String(input || '').toLowerCase().trim();
             if (!s) return null;
@@ -113,11 +152,11 @@
                 if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
                 if (dm[3]) { y = dm[3].length === 2 ? 2000 + +dm[3] : +dm[3]; explicitYear = true; }
                 explicitDay = true;
-            } else if (/übermorgen|uebermorgen/.test(rest)) {
+            } else if (TXT.de.dayAfter.test(rest) || TXT.en.dayAfter.test(rest)) {
                 d += 2; explicitDay = true;
-            } else if (/morgen|tomorrow/.test(rest)) {
+            } else if (TXT.de.tomorrow.test(rest)) {
                 d += 1; explicitDay = true;
-            } else if (/heute|today|vandaag/.test(rest)) {
+            } else if (TXT.de.today.test(rest)) {
                 explicitDay = true;
             }
 
@@ -129,7 +168,7 @@
     };
 
     /* ------------------------------------------------------------------ */
-    /* Speicher                                                            */
+    /* Storage (localStorage only, no cookies)                             */
     /* ------------------------------------------------------------------ */
     const Store = {
         key() { return (window.game_data ? game_data.world : 'tw') + '_snipeDE'; },
@@ -137,19 +176,19 @@
             try { return JSON.parse(localStorage.getItem(this.key())) || {}; } catch (e) { return {}; }
         },
         save(obj) {
-            try { localStorage.setItem(this.key(), JSON.stringify(obj)); } catch (e) { /* egal */ }
+            try { localStorage.setItem(this.key(), JSON.stringify(obj)); } catch (e) { /* ignore */ }
         },
     };
 
     /* ------------------------------------------------------------------ */
-    /* Hilfsfunktionen Spielseite                                          */
+    /* Page helpers                                                        */
     /* ------------------------------------------------------------------ */
     function getDuration() {
         const dur = $('#date_arrival [data-duration]').first().data('duration');
         if (dur) return dur * 1000;
         let ms = null;
         $('#command-data-form td').each(function () {
-            if (ms === null && /^\s*(Dauer|Duration|Duur)/i.test($(this).text())) {
+            if (ms === null && T.dur.test($(this).text())) {
                 const m = $(this).next().text().match(/(\d+):(\d{2}):(\d{2})/);
                 if (m) ms = ((+m[1]) * 3600 + (+m[2]) * 60 + (+m[3])) * 1000;
             }
@@ -158,19 +197,20 @@
     }
 
     function fmtCountdown(ms) {
-        if (ms <= 0) return 'zu spät';
+        if (ms <= 0) return T.late;
         const t = Math.floor(ms / 1000);
         return `${Math.floor(t / 3600)}:${pad(Math.floor(t / 60) % 60)}:${pad(t % 60)}`;
     }
 
     function fmtLocal(epoch) {
-        return new Date(epoch).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        return new Date(epoch).toLocaleTimeString(LANG === 'de' ? 'de-DE' : undefined,
+            { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     }
 
-    /* Countdown-Piepser: harte Rechteck-Töne, zeitgenau über die AudioContext-Uhr geplant.
-     *   jede volle Sekunde vor dem optimalen Klick (rote Linie): kurzer Piep 880 Hz
-     *   1 s vorher: langer hoher Piep 1320 Hz
-     *   optimaler Klick (rote Linie): sehr hoher Klick 1760 Hz                    */
+    /* Countdown beeps, scheduled on the AudioContext clock:
+     *   every full second before the optimal click: short beep 880 Hz
+     *   1 s before: long high beep 1320 Hz
+     *   optimal click (red line): very high click 1760 Hz                      */
     const Sound = {
         ctx: null,
         nodes: [],
@@ -202,17 +242,17 @@
         },
 
         cancel() {
-            this.nodes.forEach(o => { try { o.stop(); } catch (e) { /* schon fertig */ } });
+            this.nodes.forEach(o => { try { o.stop(); } catch (e) { /* already done */ } });
             this.nodes = [];
         },
 
-        schedule(sendEpoch, secs) {
+        schedule(clickEpoch, secs) {
             const c = this.get();
             if (!c) return;
             this.cancel();
             const base = c.currentTime, now = Clock.now();
             for (let k = secs; k >= 0; k--) {
-                const t = (sendEpoch - k * 1000 - now) / 1000;
+                const t = (clickEpoch - k * 1000 - now) / 1000;
                 if (t < 0) continue;
                 if (k === 0) this.beep(base + t, 1760, 0.08);
                 else if (k === 1) this.beep(base + t, 1320, 0.25);
@@ -254,16 +294,12 @@
 #snp-cmds tr.command-row{cursor:pointer}
 #snp-cmds tr.command-row.snp-sel td{background:#fff !important}
 .snp-cd{font-weight:bold;color:darkblue;white-space:nowrap}
-#snp-wm{font-size:8px;color:#999;text-align:right}
-#troop_confirm_submit.snp-armed{background:#1e8c3a !important;color:#fff !important;box-shadow:0 0 0 3px #2ecc71;outline:none}
-#snp-focus{margin-left:8px;font-weight:bold;font-size:12px}
-#snp-focus.on{color:#1e8c3a}
-#snp-focus.off{color:#c0392b}`;
+#snp-wm{font-size:8px;color:#999;text-align:right}`;
         $('<style id="snp-style">').text(css).appendTo('head');
     }
 
     /* ------------------------------------------------------------------ */
-    /* Hauptteil                                                           */
+    /* Main                                                                */
     /* ------------------------------------------------------------------ */
     function start() {
         Clock.init();
@@ -272,10 +308,10 @@
         const duration = getDuration();
         const saved = Store.load();
         const state = {
-            target: null,                          // gewünschte Ankunft (epoch ms)
+            target: null,                          // desired arrival (epoch ms)
             alarm: saved.alarm !== false,
             alarmSec: Number.isFinite(saved.alarmSec) ? saved.alarmSec : 5,
-            lat: Number.isFinite(saved.lat) ? saved.lat : 0,     // ms vom Klick bis der Server den Befehl hat (selbst kalibrieren)
+            lat: Number.isFinite(saved.lat) ? saved.lat : 0,     // ms from click until the server has the command (calibrate)
             alarmDone: false,
             sendEpoch: null,
         };
@@ -285,23 +321,22 @@
         const $box = $(`
 <div id="snp-box">
   <div id="snp-cmds"></div>
-  <div id="snp-bar"><div id="snp-fill"></div><div id="snp-mark" title="Optimaler Klickzeitpunkt"></div><div id="snp-clock"></div></div>
+  <div id="snp-bar"><div id="snp-fill"></div><div id="snp-mark" title="${T.mark}"></div><div id="snp-clock"></div></div>
   <table>
-    <tr><td class="snp-l">Ankunft (Serverzeit):</td>
-        <td><input id="snp-target" type="text" autocomplete="off"
-             placeholder="20:15:30:123  ·  morgen 20:15:30:123  ·  24.09. 20:15:30:123">
-            <a href="#" id="snp-clear" title="Zielzeit löschen">✕</a><span id="snp-ok"></span></td></tr>
-    <tr><td class="snp-l">Ton:</td>
-        <td><label><input id="snp-alarm" type="checkbox"> an</label>
-            <input id="snp-alarm-s" type="number" min="1" step="1"> s vorher
-            <a href="#" id="snp-test" title="Ton testen">▶ Test</a></td></tr>
-    <tr><td class="snp-l">Klick-Laufzeit (ms):</td>
+    <tr><td class="snp-l">${T.arrival}</td>
+        <td><input id="snp-target" type="text" autocomplete="off" placeholder="${T.ph}">
+            <a href="#" id="snp-clear" title="${T.clear}">✕</a><span id="snp-ok"></span></td></tr>
+    <tr><td class="snp-l">${T.sound}</td>
+        <td><label><input id="snp-alarm" type="checkbox"> ${T.on}</label>
+            <input id="snp-alarm-s" type="number" min="1" step="1"> ${T.before}
+            <a href="#" id="snp-test" title="${T.testT}">${T.test}</a></td></tr>
+    <tr><td class="snp-l">${T.lat}</td>
         <td><input id="snp-lat" type="number" step="1" min="0">
-            <span class="snp-sub">rote Linie (Balkenmitte) = optimaler Klickzeitpunkt</span></td></tr>
-    <tr><td class="snp-l">Abschicken:</td><td id="snp-send">–</td></tr>
+            <span class="snp-sub">${T.latHint}</span></td></tr>
+    <tr><td class="snp-l">${T.send}</td><td id="snp-send">–</td></tr>
   </table>
   <div id="snp-last"></div>
-  <div id="snp-wm">Basis: Ricardo/Bottenkraker · Serverzeit-Umbau</div>
+  <div id="snp-wm">${T.wm}</div>
 </div>`);
         $('#date_arrival').append($box);
 
@@ -315,9 +350,9 @@
         if (saved.last) {
             const l = saved.last;
             const sg = v => (v >= 0 ? '+' : '') + v;
-            $('#snp-last').text(`Letzter Versand: Klick bei :${pad(l.ms, 3)}` +
-                (Number.isFinite(l.diff) ? ` (${sg(l.diff)} ms zum Abschickzeitpunkt` +
-                    (Number.isFinite(l.lat) ? `, ${sg(l.diff + l.lat)} ms zur roten Linie` : '') + ')' : ''));
+            $('#snp-last').text(`${T.last} :${pad(l.ms, 3)}` +
+                (Number.isFinite(l.diff) ? ` (${sg(l.diff)} ${T.toSend}` +
+                    (Number.isFinite(l.lat) ? `, ${sg(l.diff + l.lat)} ${T.toLine}` : '') + ')' : ''));
         }
 
         const persist = () => {
@@ -332,22 +367,22 @@
             Sound.cancel();
             if (state.target === null || !duration) {
                 state.sendEpoch = null;
-                $send.html(duration ? '–' : '<span class="snp-sub">Laufzeit nicht gefunden</span>');
+                $send.html(duration ? '–' : `<span class="snp-sub">${T.noDur}</span>`);
             } else {
                 state.sendEpoch = state.target - duration;
                 $send.html(`<b>${Clock.fmtFull(state.sendEpoch)}</b>
                     &nbsp;<span id="snp-send-cd" class="snp-cd"></span>
-                    <br><span class="snp-sub">bei dir: ${fmtLocal(state.sendEpoch)} Uhr · Ankunft ${Clock.fmtFull(state.target)}</span>`);
+                    <br><span class="snp-sub">${T.local}: ${fmtLocal(state.sendEpoch)}${T.clockSuffix} · ${T.arr} ${Clock.fmtFull(state.target)}</span>`);
             }
             updateCmdRows();
             updateMark();
             persist();
         };
 
-        /* Rote Linie: Klickzeitpunkt, bei dem der Befehl genau zur Zielzeit ankommt
-         *   Klick optimal = Abschickzeitpunkt - Klick-Laufzeit
-         * Der Balken ist auf diesen Klickzeitpunkt synchronisiert: er läuft jede Sekunde von 0 bis 100 %
-         * und steht genau beim optimalen Klick auf 50 % -> rote Linie immer in der Mitte. */
+        /* Red line: click moment at which the command arrives exactly at the target time
+         *   optimal click = send moment - click latency
+         * The bar is synced to this click moment: it runs 0 -> 100 % every second and is
+         * at exactly 50 % at the optimal click -> the red line is always in the centre. */
         const clickEpoch = () => state.sendEpoch === null ? null : state.sendEpoch - (Number.isFinite(state.lat) ? state.lat : 0);
         function updateMark() {
             const m = document.getElementById('snp-mark');
@@ -367,7 +402,7 @@
             const v = $target.val();
             if (!v.trim()) { setTarget(null, false); return; }
             const ep = Clock.parse(v);
-            if (ep === null) { $ok.addClass('bad').text('?? Format z.B. 20:15:30:123'); return; }
+            if (ep === null) { $ok.addClass('bad').text(T.bad); return; }
             setTarget(ep, false);
         });
         $('#snp-clear').on('click', (e) => { e.preventDefault(); setTarget(null, true); });
@@ -383,7 +418,7 @@
             recompute();
         });
         $('#snp-test').on('click', (e) => { e.preventDefault(); Sound.test(); });
-        // Browser erlauben Ton erst nach einer Nutzeraktion -> beim ersten Klick/Tippen freischalten
+        // browsers only allow sound after a user action -> unlock on first click/key in the panel
         $box.on('pointerdown keydown', () => Sound.get());
         $('#snp-alarm-s').on('input', function () {
             const v = parseInt(this.value, 10);
@@ -391,19 +426,23 @@
             state.alarmDone = false;
             persist();
         });
+        // Enter inside the panel's fields must not submit the command form
+        $box.on('keydown', 'input', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); }
+        });
 
-        // Übergabe per Link (?arrivalTimestamp=... im Referrer, wie beim Original)
+        // hand-over via link (?arrivalTimestamp=... in the referrer, as in the original)
         let fromRef = null;
         try {
             const p = new URL(document.referrer).searchParams.get('arrivalTimestamp');
             if (p && /^\d+$/.test(p)) fromRef = parseInt(p, 10);
-        } catch (e) { /* kein Referrer */ }
+        } catch (e) { /* no referrer */ }
 
         if (fromRef) setTarget(fromRef, true);
         else if (state.target !== null) setTarget(state.target, true);
         else recompute();
 
-        /* ---------- laufende Befehle zum Ziel ---------- */
+        /* ---------- commands heading to the target (one request on start) ---------- */
         function updateCmdRows() {
             cmdRows.forEach(r => { r.sendAt = duration ? r.arrival - duration : null; });
         }
@@ -415,7 +454,7 @@
             $.get(game_data.link_base_pure + 'info_village&id=' + id).done(function (html) {
                 const $tbl = $(html).find('.commands-container').first();
                 if (!$tbl.length || !$tbl.find('tr.command-row').length) return;
-                $tbl.find('tr:first').append('<th>Abschicken in</th>');
+                $tbl.find('tr:first').append(`<th>${T.cmdCol}</th>`);
                 $tbl.find('tr.command-row').each(function () {
                     const $r = $(this);
                     const end = parseInt($r.find('[data-endtime]').last().data('endtime'), 10);
@@ -424,7 +463,7 @@
                     const arrival = end * 1000 + (msM ? +msM[1] : 0);
                     const $cd = $('<td class="snp-cd"></td>');
                     $r.append($cd);
-                    $r.find('[data-endtime]').removeClass('timer widget-command-timer'); // TW-Timer nicht doppelt
+                    $r.find('[data-endtime]').removeClass('timer widget-command-timer'); // avoid double game timer
                     const row = { $r, $cd, $end: $r.find('[data-endtime]').last(), end: end * 1000, arrival, sendAt: null };
                     cmdRows.push(row);
                     $r.on('click', () => {
@@ -434,12 +473,12 @@
                     });
                 });
                 updateCmdRows();
-                $('#snp-cmds').append('<div><b>Befehle zum Ziel</b> <span class="snp-sub">(Zeile anklicken = Ankunft übernehmen)</span></div>').append($tbl);
+                $('#snp-cmds').append(`<div><b>${T.cmds}</b> <span class="snp-sub">${T.cmdsHint}</span></div>`).append($tbl);
             });
         }
         loadCommands();
 
-        /* ---------- Schleifen ---------- */
+        /* ---------- loops (display only) ---------- */
         const origTitle = document.title;
         const fill = document.getElementById('snp-fill');
         const clock = document.getElementById('snp-clock');
@@ -456,7 +495,6 @@
             if (!keepTitle) Sound.cancel();
             if (rafId) cancelAnimationFrame(rafId);
             if (tickId) clearInterval(tickId);
-            cleanupFocus();
             if (!keepTitle) document.title = origTitle;
         }
 
@@ -469,9 +507,9 @@
                 fill.style.background = CFG.noDateColor;
             } else {
                 const ce = clickEpoch();
-                const diff = ce - now;   // ms bis zum optimalen Klick
+                const diff = ce - now;   // ms until the optimal click
                 fill.style.width = (mod(now - ce + 500, 1000) / 10) + '%';
-                // grün: die Sekunde um den optimalen Klick (Linie in der Mitte), rot: danach, orange: davor
+                // green: the second around the optimal click, red: after it, orange: before it
                 fill.style.background = (diff > -500 && diff <= 500) ? CFG.timeColor
                     : (diff <= -500 && diff > -1500) ? CFG.lateColor : CFG.waitingColor;
             }
@@ -485,8 +523,8 @@
                 const left = state.sendEpoch - now;
                 const cd = fmtCountdown(left);
                 $('#snp-send-cd').text('(' + cd + ')').css('color', left > 0 ? 'darkblue' : CFG.lateColor);
-                document.title = left > 0 ? 'Abschicken in ' + cd : 'Zu spät!';
-                const toClick = clickEpoch() - now;   // Ton läuft auf den optimalen Klick (rote Linie) hin
+                document.title = left > 0 ? T.sendIn + cd : T.tooLate;
+                const toClick = clickEpoch() - now;   // beeps count down to the optimal click (red line)
                 if (state.alarm && !state.alarmDone && toClick > 0 && toClick <= state.alarmSec * 1000 + 500) {
                     state.alarmDone = true;
                     Sound.schedule(clickEpoch(), state.alarmSec);
@@ -505,93 +543,23 @@
         tick();
         tickId = setInterval(tick, 100);
 
-        /* ---------- Fokus auf den Abschicken-Button ---------- */
-        // Nach der letzten Eingabe im Snipe-Feld (focusDelay s) und beim Zurückwechseln in den Tab
-        // springt der Fokus auf den Button -> grün = Enter bereit. Es wird NICHTS automatisch abgeschickt.
-        var focusTimer = null;
-        const $btn = $('#troop_confirm_submit');
-        const $fs = $('<span id="snp-focus"></span>');
-        if ($btn.length) $fs.insertAfter($btn);
-
-        const editing = () => {
-            const a = document.activeElement;
-            return !!a && $box[0].contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
-        };
-
-        function showFocus() {
-            if (!$btn.length) return;
-            const on = document.activeElement === $btn[0] && document.hasFocus();
-            $btn.toggleClass('snp-armed', on);
-            $fs.toggleClass('on', on).toggleClass('off', !on)
-                .text(on ? '⏎ Enter bereit' : (CFG.focusDelay > 0 ? 'Fokus nicht auf dem Button' : ''));
-        }
-
-        function armFocus(delayMs) {
-            if (!$btn.length || CFG.focusDelay <= 0 || stopped) return;
-            clearTimeout(focusTimer);
-            focusTimer = setTimeout(() => {
-                if (stopped || !document.body.contains($btn[0])) return;
-                $btn[0].focus();
-                showFocus();
-            }, delayMs);
-        }
-
-        function onVisible() {
-            if (document.visibilityState === 'visible' && !editing()) armFocus(0);
-        }
-
-        function onFocusChange() { setTimeout(showFocus, 0); }
-
-        // Klick irgendwo in die Seite (nicht in ein Eingabefeld/Link) -> Fokus kurz danach zurück
-        function onPointer(e) {
-            if (e.target.closest && e.target.closest('input,textarea,select,a,button,label')) return;
-            armFocus(700);
-        }
-
-        function cleanupFocus() {
-            clearTimeout(focusTimer);
-            clearInterval(focusShowId);
-            document.removeEventListener('pointerdown', onPointer, true);
-            window.removeEventListener('focus', onVisible);
-            document.removeEventListener('visibilitychange', onVisible);
-            document.removeEventListener('focusin', onFocusChange);
-            document.removeEventListener('focusout', onFocusChange);
-        }
-
-        // Enter in den Snipe-Feldern darf das Formular nicht abschicken
-        $box.on('keydown', 'input', function (e) {
-            if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); }
-        });
-        // jede Eingabe im Snipe-Feld startet die Wartezeit neu
-        $box.on('input change keydown pointerdown', () => armFocus(CFG.focusDelay * 1000));
-        document.addEventListener('visibilitychange', onVisible);
-        window.addEventListener('focus', onVisible);
-        document.addEventListener('pointerdown', onPointer, true);
-        var focusShowId = setInterval(showFocus, 200);   // grün nur, wenn Fenster UND Button Fokus haben
-        document.addEventListener('focusin', onFocusChange);
-        document.addEventListener('focusout', onFocusChange);
-        armFocus(CFG.focusDelay * 1000);
-        showFocus();
-
-        /* ---------- Abschicken ---------- */
+        /* ---------- after the player clicks send: log the click (read-only listener) ---------- */
         $('#troop_confirm_submit').on('click', function () {
             const now = Clock.now();
             const last = { ms: Clock.parts(now).ms, diff: state.sendEpoch !== null ? Math.round(now - state.sendEpoch) : null, lat: state.lat };
             const cur = Store.load();
             cur.last = last;
             Store.save(cur);
-            console.log('[Snipe-Timer] Klick bei', Clock.fmtTime(now),
-                last.diff !== null ? `(${last.diff} ms zum Abschickzeitpunkt)` : '');
             stop(true);
         });
     }
 
     /* ------------------------------------------------------------------ */
-    /* Start: Versammlungsplatz direkt, Karte über Popup-Erkennung         */
+    /* Start: rally point confirm page, or the map's command popup         */
     /* ------------------------------------------------------------------ */
     function tryStart() {
         if (document.getElementById('date_arrival') && !document.getElementById('snp-box')) {
-            try { start(); } catch (e) { console.error('[Snipe-Timer]', e); }
+            try { start(); } catch (e) { console.error('[Snipe Timer]', e); }
         }
     }
 
