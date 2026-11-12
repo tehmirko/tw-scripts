@@ -30,8 +30,6 @@
         lateColor: '#c0392b',
         barWidth: typeof timeBarWidth !== 'undefined' ? timeBarWidth : false,
         focusDelay: typeof focusDelay !== 'undefined' && Number.isFinite(+focusDelay) ? +focusDelay : 5,
-        // Uhr-Sync über time_generated ist (noch) unzuverlässig -> standardmäßig aus
-        clockSync: typeof clockSync !== 'undefined' ? !!clockSync : false,
     };
 
     const DAY = 86400000;
@@ -44,39 +42,10 @@
     /* ------------------------------------------------------------------ */
     const Clock = {
         offset: 0, // ms: Server-Wanduhr minus UTC (Deutschland: 3600000 / 7200000)
-        corr: 0,   // ms: Feinkorrektur der Spieluhr aus dem Uhr-Sync
-        rtt: null, // ms: kürzester gemessener Ping beim Sync
-        synced: false,
-
-        base() {
+        now() {
             return (window.Timing && typeof Timing.getCurrentServerTime === 'function')
                 ? Timing.getCurrentServerTime()
                 : Date.now();
-        },
-
-        now() { return this.base() + this.corr; },
-
-        /* Die Spieluhr (Timing) startet mit der Serverzeit beim Erzeugen der Seite und liegt je nach
-         * Ladezeit mehrere 100 ms daneben. Sync: ein paar kleine Anfragen, Server-Zeitstempel
-         * (time_generated, ms) gegen die Mitte der Anfrage legen, kürzesten Ping nehmen. */
-        async sync(samples = 3) {
-            if (!window.game_data) return null;
-            const url = location.pathname + '?village=' + game_data.village.id + '&screen=settings&mode=vacation&_partial';
-            let best = null;
-            for (let i = 0; i < samples; i++) {
-                if (i) await new Promise(r => setTimeout(r, 400));
-                try {
-                    const a = this.base();
-                    const txt = await (await fetch(url + '&_=' + Date.now(), { cache: 'no-store', credentials: 'same-origin' })).text();
-                    const b = this.base();
-                    const m = txt.match(/"time_generated"\s*:\s*(\d+)/);
-                    if (!m) continue;
-                    const smp = { rtt: b - a, corr: (+m[1]) - (a + b) / 2 };
-                    if (!best || smp.rtt < best.rtt) best = smp;
-                } catch (e) { /* nächster Versuch */ }
-            }
-            if (best) { this.corr = Math.round(best.corr); this.rtt = Math.round(best.rtt); this.synced = true; }
-            return best;
         },
 
         init() {
@@ -306,8 +275,7 @@
             target: null,                          // gewünschte Ankunft (epoch ms)
             alarm: saved.alarm !== false,
             alarmSec: Number.isFinite(saved.alarmSec) ? saved.alarmSec : 5,
-            lat: Number.isFinite(saved.lat) ? saved.lat : 390,   // ms vom Klick bis der Server den Befehl hat (inkl. Versatz der Spieluhr)
-            latAuto: CFG.clockSync && saved.latAuto === true,   // nur mit Uhr-Sync: Klick-Laufzeit = halber Ping
+            lat: Number.isFinite(saved.lat) ? saved.lat : 0,     // ms vom Klick bis der Server den Befehl hat (selbst kalibrieren)
             alarmDone: false,
             sendEpoch: null,
         };
@@ -329,9 +297,7 @@
             <a href="#" id="snp-test" title="Ton testen">▶ Test</a></td></tr>
     <tr><td class="snp-l">Klick-Laufzeit (ms):</td>
         <td><input id="snp-lat" type="number" step="1" min="0">
-            ${CFG.clockSync ? '<a href="#" id="snp-lat-auto" title="Klick-Laufzeit wieder automatisch aus dem Ping">auto</a>' : ''}
             <span class="snp-sub">rote Linie (Balkenmitte) = optimaler Klickzeitpunkt</span></td></tr>
-    ${CFG.clockSync ? '<tr><td class="snp-l">Uhr-Sync:</td><td id="snp-sync" class="snp-sub">läuft …</td></tr>' : ''}
     <tr><td class="snp-l">Abschicken:</td><td id="snp-send">–</td></tr>
   </table>
   <div id="snp-last"></div>
@@ -357,7 +323,7 @@
         const persist = () => {
             const cur = Store.load();
             Store.save(Object.assign(cur, {
-                target: state.target, alarm: state.alarm, alarmSec: state.alarmSec, lat: state.lat, latAuto: state.latAuto,
+                target: state.target, alarm: state.alarm, alarmSec: state.alarmSec, lat: state.lat,
             }));
         };
 
@@ -414,28 +380,8 @@
         $('#snp-lat').on('input', function () {
             const v = parseInt(this.value, 10);
             state.lat = Number.isFinite(v) && v >= 0 ? v : 0;
-            state.latAuto = false;
-            $('#snp-lat-auto').css('font-weight', 'normal');
             recompute();
         });
-        const applyAutoLat = () => {
-            $('#snp-lat-auto').css('font-weight', state.latAuto ? 'bold' : 'normal');
-            if (state.latAuto && Clock.rtt !== null) {
-                state.lat = Math.round(Clock.rtt / 2);
-                $('#snp-lat').val(state.lat);
-                recompute();
-            }
-        };
-        if (CFG.clockSync) {
-            $('#snp-lat-auto').on('click', (e) => { e.preventDefault(); state.latAuto = true; applyAutoLat(); persist(); });
-            applyAutoLat();
-            Clock.sync().then((r) => {
-                $('#snp-sync').text(r
-                    ? `Spieluhr ${Clock.corr >= 0 ? '+' : ''}${Clock.corr} ms korrigiert · Ping ${Clock.rtt} ms`
-                    : 'nicht möglich – Spieluhr ungenau (±300 ms)');
-                applyAutoLat();
-            });
-        }
         $('#snp-test').on('click', (e) => { e.preventDefault(); Sound.test(); });
         // Browser erlauben Ton erst nach einer Nutzeraktion -> beim ersten Klick/Tippen freischalten
         $box.on('pointerdown keydown', () => Sound.get());
