@@ -23,13 +23,17 @@
         return;
     }
 
+    const FOCUS_MODE = false;
+
     const CFG = {
         timeColor: typeof timeColor !== 'undefined' ? timeColor : 'green',
         waitingColor: typeof waitingColor !== 'undefined' ? waitingColor : '#ff9933',
         noDateColor: typeof noDateColor !== 'undefined' ? noDateColor : 'green',
         lateColor: '#c0392b',
         barWidth: typeof timeBarWidth !== 'undefined' ? timeBarWidth : false,
-        focusDelay: typeof focusDelay !== 'undefined' && Number.isFinite(+focusDelay) ? +focusDelay : 5,
+        // Fokus-Modus vorerst AUS (Skriptbibliothek-Regeln verbieten Fokus auf den Abschicken-Button).
+        // Wieder einschalten: FOCUS_MODE auf true setzen.
+        focusDelay: !FOCUS_MODE ? 0 : (typeof focusDelay !== 'undefined' && Number.isFinite(+focusDelay) ? +focusDelay : 5),
         // Uhr-Sync über time_generated ist (noch) unzuverlässig -> standardmäßig aus
         clockSync: typeof clockSync !== 'undefined' ? !!clockSync : false,
     };
@@ -573,7 +577,7 @@
         };
 
         function showFocus() {
-            if (!$btn.length) return;
+            if (!$btn.length || CFG.focusDelay <= 0) return;
             const on = document.activeElement === $btn[0] && document.hasFocus();
             $btn.toggleClass('snp-armed', on);
             $fs.toggleClass('on', on).toggleClass('off', !on)
