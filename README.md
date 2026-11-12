@@ -6,13 +6,7 @@ Umbau des Bottenkraker-Snipetools (Ricardo). Rechnet komplett in **Serverzeit**,
 
 ```
 javascript:
-var timeColor = "green";
-var waitingColor = "#ff9933";
-var noDateColor = "green";
-var timeBarWidth = false;
-var focusDelay = 5;
-
-$.getScript('https://cdn.jsdelivr.net/gh/tehmirko/tw-scripts@main/snipe-de.js');
+$.getScript('https://cdn.jsdelivr.net/gh/tehmirko/tw-scripts@skriptbibliothek/snipe-de.js');
 ```
 
 Auf der Bestätigungsseite eines Angriffs/Unterstützung (Versammlungsplatz oder Karte) ausführen.
@@ -25,7 +19,8 @@ Auf der Bestätigungsseite eines Angriffs/Unterstützung (Versammlungsplatz oder
 - Balken: auf den optimalen Klick synchronisiert. Orange = warten, **grün = die Sekunde um den optimalen Klick**, rot = zu spät. **Abschicken, wenn der Balken die rote Linie in der Mitte erreicht.**
 - „Letzter Versand“ zeigt, wie viele ms der Klick danebenlag.
 - **Klick-Laufzeit (ms):** Zeit vom Klick bis der Server den Befehl hat, inkl. Versatz der Spieluhr (Standard 0 – einmal kalibrieren, siehe unten). Die rote Linie in der Balkenmitte ist der optimale Klickzeitpunkt (= Abschickzeitpunkt − Klick-Laufzeit). Wer genau auf die rote Linie drückt, kommt zur Zielzeit an (die frühere Korrektur entfällt). „Letzter Versand“ zeigt zusätzlich die Abweichung zur roten Linie.
-- **Fokus-Modus (Enter):** 5 s nach der letzten Eingabe im Snipe-Feld (und beim Zurückwechseln in den Tab) springt der Fokus auf den Abschicken-Button. Klick irgendwo in die Seite (nicht in ein Feld) holt den Fokus nach 0,7 s zurück. Grün hinterlegt + „⏎ Enter bereit“ (nur wenn auch das Browserfenster aktiv ist) = mit Enter abschicken. Rot „Fokus nicht auf dem Button“ = nicht in die Seite klicken, kurz warten oder Tab neu anwählen. Enter in den Snipe-Feldern schickt nicht ab. Wartezeit über `var focusDelay = 5;` (0 = aus).
+- Kein Fokus-Modus: Laut Skriptbibliothek-Regeln darf ein Skript den Abschicken-Button weder fokussieren noch klicken. Abschicken immer selbst.
+- Farben/Breite optional per Benutzerdaten (JSON): `{"timeColor":"green","waitingColor":"#ff9933","noDateColor":"green","barWidth":600}`
 
 ## Update
 
